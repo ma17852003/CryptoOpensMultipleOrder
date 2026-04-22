@@ -172,6 +172,9 @@ app.post('/api/close-all', async (req, res) => {
     for (const position of positions) {
       if (position.contracts && position.contracts > 0) {
         try {
+          // Add delay to prevent rate limit
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
           const side = position.side === 'long' ? 'sell' : 'buy';
           // Market close
           const order = await exchange.createOrder(
