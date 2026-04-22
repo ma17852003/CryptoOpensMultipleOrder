@@ -43,10 +43,28 @@ docker-compose up -d --build
 
 ## 🐍 替代啟動方式 (純 Python 驅動)
 如果您不想使用 Docker 或 Node.js，系統也內建了純 Python 寫成的核心後端。
+
+### 方式一：一鍵啟動 (推薦 Windows 用戶)
 只需雙擊專案資料夾中的 **`start-python.bat`**：
-1. 腳本會自動幫您安裝所需的 Python 套件 (`flask`, `ccxt`)。
+1. 腳本會自動幫您安裝所需的 Python 套件 (`flask`, `ccxt`) 與前端依賴。
 2. 自動啟動 Python 後端與前端介面。
 3. 一樣能在網頁上享受到最高速的下單體驗！
+
+### 方式二：手動輸入指令 (Mac/Linux 或開發者)
+1. 安裝 Python 依賴套件 (一鍵安裝所有 requirements)：
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. 啟動 Python 後端：
+   ```bash
+   python app.py
+   ```
+3. 啟動前端 (需有 Node.js)：
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
 ---
 
