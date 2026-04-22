@@ -41,6 +41,15 @@ docker-compose up -d --build
 
 ---
 
+## 🐍 替代啟動方式 (純 Python 驅動)
+如果您不想使用 Docker 或 Node.js，系統也內建了純 Python 寫成的核心後端。
+只需雙擊專案資料夾中的 **`start-python.bat`**：
+1. 腳本會自動幫您安裝所需的 Python 套件 (`flask`, `ccxt`)。
+2. 自動啟動 Python 後端與前端介面。
+3. 一樣能在網頁上享受到最高速的下單體驗！
+
+---
+
 ## 🔧 系統架構
 - **前端**: React + Vite + TypeScript (玻璃擬物化 UI)
 - **後端**: Node.js + Express + CCXT (負責精準繞過交易所速率限制與下單運算)
