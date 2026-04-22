@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# API Keys and configurations (IMPORTANT: Keeps API keys safe)
+backend/config.json
+.env
+.env.*
+*.local
+
+# Logs
+backend/trade.log
+*.log
+
+# Build outputs
+dist/
+frontend/dist/
+backend/dist/
+
+# OS files
+.DS_Store
+Thumbs.db
