@@ -50,8 +50,78 @@ def connect():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 400
 
+import threading
+
+active_monitoring = False
+monitor_config = None
+
+def execute_close_all(api_key, secret):
+    global active_monitoring
+    active_monitoring = False
+    
+    exchange = get_exchange(api_key, secret)
+    exchange.load_markets()
+    positions = exchange.fetch_positions()
+    
+    results = []
+    errors = []
+    log_action("\n=== 執行一鍵平倉 ===")
+    
+    for p in positions:
+        contracts = float(p.get('contracts', 0))
+        if contracts > 0:
+            try:
+                time.sleep(0.5)
+                side = 'sell' if p['side'] == 'long' else 'buy'
+                order = exchange.create_order(p['symbol'], 'market', side, contracts, None, {'reduceOnly': True})
+                log_action(f"[成功] 平倉 {p['symbol']} | 數量: {contracts} 張")
+                results.append({'symbol': p['symbol'], 'order': order})
+            except Exception as e:
+                log_action(f"[失敗] 平倉 {p['symbol']} 失敗 | 錯誤原因: {e}")
+                errors.append({'symbol': p['symbol'], 'error': str(e)})
+                
+    return results, errors
+
+def monitoring_loop():
+    global active_monitoring, monitor_config
+    log_action("\n👀 [監控啟動] 開始監控帶頭幣種的止盈價格...")
+    
+    while active_monitoring and monitor_config:
+        try:
+            exchange = get_exchange(monitor_config['apiKey'], monitor_config['secret'])
+            tickers = exchange.fetch_tickers()
+            
+            trigger_close_all = False
+            trigger_reason = ""
+            
+            for leader in monitor_config['leaders']:
+                symbol = f"{leader['symbol']}/USDT:USDT"
+                ticker = tickers.get(symbol)
+                if not ticker or not ticker.get('last'): continue
+                
+                current_price = ticker['last']
+                if leader['side'] == 'buy' and current_price >= leader['takeProfit']:
+                    trigger_close_all = True
+                    trigger_reason = f"{leader['symbol']} 做多達到止盈價格 {leader['takeProfit']} (當前 {current_price})"
+                    break
+                if leader['side'] == 'sell' and current_price <= leader['takeProfit']:
+                    trigger_close_all = True
+                    trigger_reason = f"{leader['symbol']} 做空達到止盈價格 {leader['takeProfit']} (當前 {current_price})"
+                    break
+                    
+            if trigger_close_all and active_monitoring:
+                log_action(f"\n🔔 [帶頭老大觸發] {trigger_reason}！立即啟動一鍵全平倉！")
+                execute_close_all(monitor_config['apiKey'], monitor_config['secret'])
+                break
+                
+        except Exception as e:
+            print(f"[監控] 網路延遲或錯誤: {e}")
+            
+        time.sleep(2)
+
 @app.route('/api/open-positions', methods=['POST'])
 def open_positions():
+    global active_monitoring, monitor_config
     data = request.json
     exchange = get_exchange(data['apiKey'], data['secret'])
     orders = data.get('orders', [])
@@ -120,6 +190,21 @@ def open_positions():
                 log_action(f"[失敗] {order['symbol']} 開倉失敗 | 錯誤原因: {e}")
                 errors.append({'symbol': order['symbol'], 'error': str(e)})
                 
+        
+        # Check for leaders
+        leaders = [o for o in orders if o.get('isLeader') and o.get('takeProfit')]
+        if leaders:
+            monitor_config = {
+                'apiKey': data['apiKey'],
+                'secret': data['secret'],
+                'leaders': [{'symbol': o['symbol'], 'side': o['side'], 'takeProfit': float(o['takeProfit'])} for o in leaders]
+            }
+            if not active_monitoring:
+                active_monitoring = True
+                threading.Thread(target=monitoring_loop, daemon=True).start()
+        else:
+            active_monitoring = False
+            
         return jsonify({'success': True, 'results': results, 'errors': errors})
         
     except Exception as e:
@@ -128,31 +213,9 @@ def open_positions():
 @app.route('/api/close-all', methods=['POST'])
 def close_all():
     data = request.json
-    exchange = get_exchange(data['apiKey'], data['secret'])
-    
     try:
-        exchange.load_markets()
-        positions = exchange.fetch_positions()
-        
-        results = []
-        errors = []
-        log_action("\n=== 收到一鍵平倉請求 ===")
-        
-        for p in positions:
-            contracts = float(p.get('contracts', 0))
-            if contracts > 0:
-                try:
-                    time.sleep(0.5)
-                    side = 'sell' if p['side'] == 'long' else 'buy'
-                    order = exchange.create_order(p['symbol'], 'market', side, contracts, None, {'reduceOnly': True})
-                    log_action(f"[成功] 平倉 {p['symbol']} | 數量: {contracts} 張")
-                    results.append({'symbol': p['symbol'], 'order': order})
-                except Exception as e:
-                    log_action(f"[失敗] 平倉 {p['symbol']} 失敗 | 錯誤原因: {e}")
-                    errors.append({'symbol': p['symbol'], 'error': str(e)})
-                    
+        results, errors = execute_close_all(data['apiKey'], data['secret'])
         return jsonify({'success': True, 'results': results, 'errors': errors})
-        
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 400
 
