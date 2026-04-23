@@ -90,14 +90,28 @@ def get_markets():
         markets = exchange.load_markets()
         market_data = {}
         for symbol, market in markets.items():
+            # Only process swap markets
+            if market.get('type') != 'swap':
+                continue
+                
             base = symbol.split('/')[0]
-            market_data[base] = {
-                'symbol': base,
-                'fullSymbol': symbol,
-                'maxLeverage': market['limits'].get('leverage', {}).get('max', 200),
-                'minAmount': market['limits'].get('amount', {}).get('min', 1),
-                'contractSize': market.get('contractSize', 1)
-            }
+            current_max_lev = market['limits'].get('leverage', {}).get('max', 200)
+            
+            # Update if:
+            # 1. We don't have this coin yet
+            # 2. This is a USDT settled market (primary target)
+            # 3. This market has higher leverage and we don't have a USDT market yet
+            if (base not in market_data or 
+                symbol.endswith(':USDT') or 
+                (current_max_lev > market_data[base]['maxLeverage'] and not market_data[base]['fullSymbol'].endswith(':USDT'))):
+                
+                market_data[base] = {
+                    'symbol': base,
+                    'fullSymbol': symbol,
+                    'maxLeverage': current_max_lev,
+                    'minAmount': market['limits'].get('amount', {}).get('min', 1),
+                    'contractSize': market.get('contractSize', 1)
+                }
         return jsonify({'success': True, 'markets': market_data})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500

@@ -465,7 +465,15 @@ function App() {
                           onChange={e => updateOrder(order.id, 'leverage', e.target.value)}
                         />
                         <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>
-                          x {markets[order.symbol] ? <span style={{ color: 'var(--primary)' }}> (Max: {markets[order.symbol].maxLeverage})</span> : ''}
+                          x {markets[order.symbol] ? (
+                            <span 
+                              className="max-leverage-badge"
+                              onClick={() => updateOrder(order.id, 'leverage', markets[order.symbol].maxLeverage.toString())}
+                              title="點擊套用最大槓桿"
+                            >
+                              (Max: {markets[order.symbol].maxLeverage})
+                            </span>
+                          ) : ''}
                         </span>
                       </div>
                     </td>

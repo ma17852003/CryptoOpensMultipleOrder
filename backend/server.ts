@@ -86,14 +86,28 @@ app.get('/api/markets', async (req, res) => {
     const marketData: any = {};
     for (const symbol in markets) {
       const market = markets[symbol];
+      // Only process swap markets as this is a futures tool
+      if (market.type !== 'swap') continue;
+
       const baseSymbol = symbol.split('/')[0];
-      marketData[baseSymbol] = {
-        symbol: baseSymbol,
-        fullSymbol: symbol,
-        maxLeverage: market.limits.leverage?.max || 200,
-        minAmount: market.limits.amount?.min || 1,
-        contractSize: market.contractSize || 1
-      };
+      const currentMaxLev = market.limits.leverage?.max || 200;
+      
+      // Update if:
+      // 1. We don't have this coin yet
+      // 2. This is a USDT settled market (primary target)
+      // 3. This market has higher leverage and we don't have a USDT market yet
+      if (!marketData[baseSymbol] || 
+          symbol.endsWith(':USDT') || 
+          (currentMaxLev > marketData[baseSymbol].maxLeverage && !marketData[baseSymbol].fullSymbol.endsWith(':USDT'))) {
+        
+        marketData[baseSymbol] = {
+          symbol: baseSymbol,
+          fullSymbol: symbol,
+          maxLeverage: currentMaxLev,
+          minAmount: market.limits.amount?.min || 1,
+          contractSize: market.contractSize || 1
+        };
+      }
     }
     res.json({ success: true, markets: marketData });
   } catch (error: any) {
