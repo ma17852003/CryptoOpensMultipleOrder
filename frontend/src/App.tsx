@@ -25,6 +25,12 @@ function App() {
   const [apiSecret, setApiSecret] = useState(localStorage.getItem('mexc_api_secret') || '');
   const [isConnected, setIsConnected] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
+  const [markets, setMarkets] = useState<Record<string, any>>({});
+  
+  const [bulkConfig, setBulkConfig] = useState({
+    side: 'buy' as 'buy' | 'sell',
+    amount: '10'
+  });
   
   const [orders, setOrders] = useState<OrderConfig[]>(() => {
     const saved = localStorage.getItem('mexc_orders');
@@ -88,6 +94,35 @@ function App() {
       setIsConnected(false);
     }
     setLoading(false);
+  };
+
+  const fetchMarkets = async () => {
+    if (!apiKey || !apiSecret) return;
+    try {
+      const res = await axios.get(`${API_BASE}/markets`, {
+        params: { apiKey, secret: apiSecret }
+      });
+      if (res.data.success) {
+        setMarkets(res.data.markets);
+      }
+    } catch (err) {
+      console.error('Failed to fetch markets:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (isConnected) {
+      fetchMarkets();
+    }
+  }, [isConnected]);
+
+  const applyBulkConfig = () => {
+    setOrders(orders.map(o => ({
+      ...o,
+      side: bulkConfig.side,
+      amount: bulkConfig.amount
+    })));
+    showNotification('已將統一設定套用到所有幣種', 'success');
   };
 
   const addCoin = (symbol: string) => {
@@ -281,6 +316,38 @@ function App() {
         </div>
 
         {orders.length > 0 && (
+          <div className="bulk-adjustment-panel glass-panel" style={{ margin: '1rem 0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+            <h3 style={{ fontSize: '0.9rem', marginBottom: '1rem', opacity: 0.8 }}>一鍵統一調整 (套用到下方所有幣種)</h3>
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label style={{ fontSize: '0.8rem' }}>方向</label>
+                <select 
+                  className="input-field" 
+                  value={bulkConfig.side}
+                  onChange={e => setBulkConfig({...bulkConfig, side: e.target.value as any})}
+                >
+                  <option value="buy">全部做多</option>
+                  <option value="sell">全部做空</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label style={{ fontSize: '0.8rem' }}>金額 (USDT)</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  style={{ width: '100px' }}
+                  value={bulkConfig.amount}
+                  onChange={e => setBulkConfig({...bulkConfig, amount: e.target.value})}
+                />
+              </div>
+              <button className="btn btn-primary" onClick={applyBulkConfig} style={{ height: '42px' }}>
+                套用統一設定
+              </button>
+            </div>
+          </div>
+        )}
+
+        {orders.length > 0 && (
           <div className="coin-table-wrapper">
             <table className="coin-table">
               <thead>
@@ -329,13 +396,18 @@ function App() {
                       />
                     </td>
                     <td>
-                      <input 
-                        type="text" 
-                        className="input-field" 
-                        style={{ width: '80px', padding: '0.5rem' }}
-                        value={order.leverage}
-                        onChange={e => updateOrder(order.id, 'leverage', e.target.value)}
-                      /> x
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <input 
+                          type="text" 
+                          className="input-field" 
+                          style={{ width: '60px', padding: '0.5rem' }}
+                          value={order.leverage}
+                          onChange={e => updateOrder(order.id, 'leverage', e.target.value)}
+                        />
+                        <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>
+                          x {markets[order.symbol] ? <span style={{ color: 'var(--primary)' }}> (Max: {markets[order.symbol].maxLeverage})</span> : ''}
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <input 

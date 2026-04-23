@@ -67,6 +67,30 @@ app.post('/api/connect', async (req, res) => {
   }
 });
 
+app.get('/api/markets', async (req, res) => {
+  const { apiKey, secret } = req.query;
+  try {
+    const exchange = getExchange(apiKey as string, secret as string);
+    const markets = await exchange.loadMarkets();
+    const marketData: any = {};
+    
+    for (const symbol in markets) {
+      const market = markets[symbol];
+      if (symbol.endsWith('/USDT:USDT')) {
+        const baseSymbol = symbol.split('/')[0];
+        marketData[baseSymbol] = {
+          maxLeverage: market.limits?.leverage?.max || (market.info as any).maxLeverage || 100,
+          precision: market.precision,
+          contractSize: market.contractSize
+        };
+      }
+    }
+    res.json({ success: true, markets: marketData });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 let activeMonitoring = false;
 let monitorConfig: any = null;
 
@@ -122,7 +146,8 @@ async function startMonitoring() {
       
       for (const leader of monitorConfig.leaders) {
         const symbol = `${leader.symbol}/USDT:USDT`;
-        const pos = positions.find((p: any) => p.symbol === symbol);
+        const expectedSide = leader.side === 'buy' ? 'long' : 'short';
+        const pos = positions.find((p: any) => p.symbol === symbol && p.side === expectedSide);
         
         // 如果帶頭幣種的倉位不見了，或者數量變成 0，代表它剛剛被交易所平倉了！
         if (!pos || !pos.contracts || pos.contracts === 0) {

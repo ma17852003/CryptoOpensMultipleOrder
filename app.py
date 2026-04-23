@@ -50,6 +50,26 @@ def connect():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 400
 
+@app.route('/api/markets', methods=['GET'])
+def get_markets():
+    api_key = request.args.get('apiKey')
+    secret = request.args.get('secret')
+    try:
+        exchange = get_exchange(api_key, secret)
+        markets = exchange.load_markets()
+        market_data = {}
+        for symbol, market in markets.items():
+            if symbol.endswith('/USDT:USDT'):
+                base_symbol = symbol.split('/')[0]
+                market_data[base_symbol] = {
+                    'maxLeverage': market.get('limits', {}).get('leverage', {}).get('max') or market.get('info', {}).get('maxLeverage') or 100,
+                    'precision': market.get('precision'),
+                    'contractSize': market.get('contractSize')
+                }
+        return jsonify({'success': True, 'markets': market_data})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 import threading
 
 active_monitoring = False
@@ -68,7 +88,8 @@ def execute_close_all(api_key, secret):
     log_action("\n=== 執行一鍵平倉 ===")
     
     for p in positions:
-        contracts = float(p.get('contracts', 0))
+        contracts = p.get('contracts')
+        contracts = float(contracts) if contracts is not None else 0.0
         if contracts > 0:
             try:
                 time.sleep(0.5)
@@ -98,7 +119,8 @@ def monitoring_loop():
             
             for leader in monitor_config['leaders']:
                 symbol = f"{leader['symbol']}/USDT:USDT"
-                pos = next((p for p in positions if p['symbol'] == symbol), None)
+                expected_side = 'long' if leader['side'] == 'buy' else 'short'
+                pos = next((p for p in positions if p['symbol'] == symbol and p.get('side') == expected_side), None)
                 
                 # 如果找不到倉位，或數量為 0，代表已經被平倉
                 if not pos or not pos.get('contracts') or float(pos['contracts']) == 0:
