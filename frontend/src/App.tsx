@@ -211,6 +211,25 @@ function App() {
     setLoading(false);
   };
 
+  const handleUpdateTPSL = async (order: OrderConfig) => {
+    if (!isConnected || !apiKey || !apiSecret) return;
+    try {
+      const res = await axios.post(`${API_BASE}/update-tpsl`, {
+        apiKey,
+        secret: apiSecret,
+        symbol: order.symbol,
+        side: order.side,
+        takeProfit: order.takeProfit,
+        stopLoss: order.stopLoss
+      });
+      if (res.data.success) {
+        showNotification(`${order.symbol} 止盈止損更新成功`, 'success');
+      }
+    } catch (err: any) {
+      console.log('TPSL Update Info:', err.response?.data?.message || err.message);
+    }
+  };
+
   return (
     <div className="app-container">
       <div className="header">
@@ -417,6 +436,7 @@ function App() {
                         placeholder="選填"
                         value={order.takeProfit || ''}
                         onChange={e => updateOrder(order.id, 'takeProfit', e.target.value)}
+                        onBlur={() => handleUpdateTPSL(order)}
                       />
                     </td>
                     <td>
@@ -427,6 +447,7 @@ function App() {
                         placeholder="選填"
                         value={order.stopLoss || ''}
                         onChange={e => updateOrder(order.id, 'stopLoss', e.target.value)}
+                        onBlur={() => handleUpdateTPSL(order)}
                       />
                     </td>
                     <td>

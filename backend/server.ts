@@ -91,6 +91,60 @@ app.get('/api/markets', async (req, res) => {
   }
 });
 
+app.post('/api/update-tpsl', async (req, res) => {
+  const { apiKey, secret, symbol, side, takeProfit, stopLoss } = req.body;
+  try {
+    const exchange = getExchange(apiKey, secret);
+    await exchange.loadMarkets();
+    const fullSymbol = `${symbol}/USDT:USDT`;
+    
+    const positions = await exchange.fetchPositions();
+    const expectedSide = side === 'buy' ? 'long' : 'short';
+    const pos = positions.find((p: any) => p.symbol === fullSymbol && p.side === expectedSide);
+    
+    if (!pos || !pos.contracts || pos.contracts <= 0) {
+      return res.json({ success: false, message: '找不到對應的持倉，無法單獨更新止盈止損' });
+    }
+
+    const amount = pos.contracts;
+    const closeSide = side === 'buy' ? 'sell' : 'buy';
+
+    const openOrders = await exchange.fetchOpenOrders(fullSymbol);
+    for (const order of openOrders) {
+      if (order.stopPrice || (order.type && (order.type.includes('STOP') || order.type.includes('PROFIT')))) {
+        try {
+          await exchange.cancelOrder(order.id, fullSymbol);
+        } catch (e) {
+          console.error(`Cancel order ${order.id} failed:`, e);
+        }
+      }
+    }
+
+    const results = [];
+    if (takeProfit && !isNaN(parseFloat(takeProfit))) {
+      const tpOrder = await exchange.createOrder(fullSymbol, 'market', closeSide, amount, undefined, {
+        stopPrice: parseFloat(takeProfit),
+        type: 'TAKE_PROFIT_MARKET',
+        reduceOnly: true
+      });
+      results.push({ type: 'TP', order: tpOrder });
+    }
+
+    if (stopLoss && !isNaN(parseFloat(stopLoss))) {
+      const slOrder = await exchange.createOrder(fullSymbol, 'market', closeSide, amount, undefined, {
+        stopPrice: parseFloat(stopLoss),
+        type: 'STOP_LOSS_MARKET',
+        reduceOnly: true
+      });
+      results.push({ type: 'SL', order: slOrder });
+    }
+
+    res.json({ success: true, results });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 let activeMonitoring = false;
 let monitorConfig: any = null;
 

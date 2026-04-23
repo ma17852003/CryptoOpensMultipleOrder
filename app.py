@@ -70,6 +70,61 @@ def get_markets():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
+@app.route('/api/update-tpsl', methods=['POST'])
+def update_tpsl():
+    data = request.json
+    api_key = data.get('apiKey')
+    secret = data.get('secret')
+    symbol = data.get('symbol')
+    side = data.get('side')
+    tp = data.get('takeProfit')
+    sl = data.get('stopLoss')
+    
+    try:
+        exchange = get_exchange(api_key, secret)
+        exchange.load_markets()
+        full_symbol = f"{symbol}/USDT:USDT"
+        
+        positions = exchange.fetch_positions()
+        expected_side = 'long' if side == 'buy' else 'short'
+        pos = next((p for p in positions if p['symbol'] == full_symbol and p.get('side') == expected_side), None)
+        
+        if not pos or not pos.get('contracts') or float(pos['contracts']) <= 0:
+            return jsonify({'success': False, 'message': '找不到對應持倉'})
+            
+        amount = float(pos['contracts'])
+        close_side = 'sell' if side == 'buy' else 'buy'
+        
+        # 取消舊的計畫委託
+        open_orders = exchange.fetch_open_orders(full_symbol)
+        for o in open_orders:
+            if o.get('stopPrice') or (o.get('type') and ('STOP' in o['type'] or 'PROFIT' in o['type'])):
+                try:
+                    exchange.cancel_order(o['id'], full_symbol)
+                except:
+                    pass
+                    
+        results = []
+        if tp and str(tp).strip():
+            order = exchange.create_order(full_symbol, 'market', close_side, amount, None, {
+                'stopPrice': float(tp),
+                'type': 'TAKE_PROFIT_MARKET',
+                'reduceOnly': True
+            })
+            results.append({'type': 'TP', 'order': order})
+            
+        if sl and str(sl).strip():
+            order = exchange.create_order(full_symbol, 'market', close_side, amount, None, {
+                'stopPrice': float(sl),
+                'type': 'STOP_LOSS_MARKET',
+                'reduceOnly': True
+            })
+            results.append({'type': 'SL', 'order': order})
+            
+        return jsonify({'success': True, 'results': results})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 import threading
 
 active_monitoring = False
