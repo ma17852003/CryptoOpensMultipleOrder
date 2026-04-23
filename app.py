@@ -84,29 +84,26 @@ def execute_close_all(api_key, secret):
 
 def monitoring_loop():
     global active_monitoring, monitor_config
-    log_action("\n👀 [監控啟動] 開始監控帶頭幣種的止盈價格...")
+    log_action("\n👀 [監控啟動] 開始監控帶頭幣種的實際倉位狀態...")
+    
+    time.sleep(3) # 延遲 3 秒確保開倉完畢
     
     while active_monitoring and monitor_config:
         try:
             exchange = get_exchange(monitor_config['apiKey'], monitor_config['secret'])
-            tickers = exchange.fetch_tickers()
+            positions = exchange.fetch_positions()
             
             trigger_close_all = False
             trigger_reason = ""
             
             for leader in monitor_config['leaders']:
                 symbol = f"{leader['symbol']}/USDT:USDT"
-                ticker = tickers.get(symbol)
-                if not ticker or not ticker.get('last'): continue
+                pos = next((p for p in positions if p['symbol'] == symbol), None)
                 
-                current_price = ticker['last']
-                if leader['side'] == 'buy' and current_price >= leader['takeProfit']:
+                # 如果找不到倉位，或數量為 0，代表已經被平倉
+                if not pos or not pos.get('contracts') or float(pos['contracts']) == 0:
                     trigger_close_all = True
-                    trigger_reason = f"{leader['symbol']} 做多達到止盈價格 {leader['takeProfit']} (當前 {current_price})"
-                    break
-                if leader['side'] == 'sell' and current_price <= leader['takeProfit']:
-                    trigger_close_all = True
-                    trigger_reason = f"{leader['symbol']} 做空達到止盈價格 {leader['takeProfit']} (當前 {current_price})"
+                    trigger_reason = f"{leader['symbol']} 的帶頭倉位已被平倉 (觸發止盈/止損或手動平倉)"
                     break
                     
             if trigger_close_all and active_monitoring:
@@ -191,13 +188,15 @@ def open_positions():
                 errors.append({'symbol': order['symbol'], 'error': str(e)})
                 
         
-        # Check for leaders
-        leaders = [o for o in orders if o.get('isLeader') and o.get('takeProfit')]
-        if leaders:
+        # 確保只監控成功開倉的帶頭幣種
+        successful_symbols = [r['symbol'] for r in results]
+        valid_leaders = [o for o in orders if o.get('isLeader') and o['symbol'] in successful_symbols]
+        
+        if valid_leaders:
             monitor_config = {
                 'apiKey': data['apiKey'],
                 'secret': data['secret'],
-                'leaders': [{'symbol': o['symbol'], 'side': o['side'], 'takeProfit': float(o['takeProfit'])} for o in leaders]
+                'leaders': [{'symbol': o['symbol'], 'side': o['side']} for o in valid_leaders]
             }
             if not active_monitoring:
                 active_monitoring = True

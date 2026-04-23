@@ -106,31 +106,28 @@ async function executeCloseAll(apiKey: string, secret: string) {
 
 async function startMonitoring() {
   activeMonitoring = true;
-  logAction(`\n👀 [監控啟動] 開始監控帶頭幣種的止盈價格...`);
+  logAction(`\n👀 [監控啟動] 開始監控帶頭幣種的實際倉位狀態...`);
+  
+  // 延遲 3 秒再開始首次檢查，確保 MEXC 倉位已經完全更新
+  await new Promise(resolve => setTimeout(resolve, 3000));
   
   while(activeMonitoring && monitorConfig) {
     try {
       const exchange = getExchange(monitorConfig.apiKey, monitorConfig.secret);
-      // Fetch all tickers to minimize API calls
-      const tickers = await exchange.fetchTickers();
+      // 取得最新的所有真實倉位
+      const positions = await exchange.fetchPositions();
       
       let triggerCloseAll = false;
       let triggerReason = '';
       
       for (const leader of monitorConfig.leaders) {
         const symbol = `${leader.symbol}/USDT:USDT`;
-        const ticker = tickers[symbol];
-        if (!ticker || !ticker.last) continue;
+        const pos = positions.find((p: any) => p.symbol === symbol);
         
-        const currentPrice = ticker.last;
-        if (leader.side === 'buy' && currentPrice >= leader.takeProfit) {
+        // 如果帶頭幣種的倉位不見了，或者數量變成 0，代表它剛剛被交易所平倉了！
+        if (!pos || !pos.contracts || pos.contracts === 0) {
           triggerCloseAll = true;
-          triggerReason = `${leader.symbol} 做多達到止盈價格 ${leader.takeProfit} (當前 ${currentPrice})`;
-          break;
-        }
-        if (leader.side === 'sell' && currentPrice <= leader.takeProfit) {
-          triggerCloseAll = true;
-          triggerReason = `${leader.symbol} 做空達到止盈價格 ${leader.takeProfit} (當前 ${currentPrice})`;
+          triggerReason = `${leader.symbol} 的帶頭倉位已被平倉 (觸及止盈/止損/或手動平倉)`;
           break;
         }
       }
@@ -142,7 +139,6 @@ async function startMonitoring() {
       }
       
     } catch (e: any) {
-      // Ignore network errors in loop to keep monitoring
       console.log(`[監控] 網路延遲或錯誤: ${e.message}`);
     }
     // Check every 2 seconds
@@ -235,16 +231,17 @@ app.post('/api/open-positions', async (req, res) => {
       }
     }
 
-    // Check if there are any leader coins with TP set
-    const leaders = orders.filter((o: any) => o.isLeader && o.takeProfit);
-    if (leaders.length > 0) {
+    // 確保只監控 "成功開倉" 且 "設定為帶頭" 的幣種
+    const successfulSymbols = results.map((r: any) => r.symbol);
+    const validLeaders = orders.filter((o: any) => o.isLeader && successfulSymbols.includes(o.symbol));
+    
+    if (validLeaders.length > 0) {
       monitorConfig = {
         apiKey,
         secret,
-        leaders: leaders.map((o: any) => ({
+        leaders: validLeaders.map((o: any) => ({
           symbol: o.symbol,
-          side: o.side,
-          takeProfit: Number(o.takeProfit)
+          side: o.side
         }))
       };
       if (!activeMonitoring) {
