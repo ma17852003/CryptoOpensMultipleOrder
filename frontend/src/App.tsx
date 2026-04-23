@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Settings, Play, Square, Trash2, Plus, Zap, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Settings, Play, Square, Trash2, Plus, Zap, AlertCircle, CheckCircle2, Star } from 'lucide-react';
 import './index.css';
 
 // Default mainstream coins based on user request
@@ -15,6 +15,7 @@ interface OrderConfig {
   side: 'buy' | 'sell';
   takeProfit?: string;
   stopLoss?: string;
+  isLeader?: boolean;
 }
 
 const API_BASE = 'http://localhost:3001/api';
@@ -295,8 +296,18 @@ function App() {
               </thead>
               <tbody>
                 {orders.map(order => (
-                  <tr key={order.id}>
-                    <td style={{ fontWeight: 'bold' }}>{order.symbol}</td>
+                  <tr key={order.id} style={{ backgroundColor: order.isLeader ? 'rgba(250, 204, 21, 0.1)' : 'transparent' }}>
+                    <td style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button 
+                        className={`btn-icon ${order.isLeader ? 'active' : ''}`} 
+                        onClick={() => updateOrder(order.id, 'isLeader', !order.isLeader)}
+                        style={{ padding: '4px', color: order.isLeader ? '#facc15' : 'rgba(255,255,255,0.3)', border: 'none', background: 'transparent', cursor: 'pointer' }}
+                        title="設為帶頭幣種"
+                      >
+                        <Star size={18} fill={order.isLeader ? '#facc15' : 'none'} />
+                      </button>
+                      {order.symbol}
+                    </td>
                     <td>
                       <select 
                         className="input-field" 

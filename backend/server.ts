@@ -67,9 +67,92 @@ app.post('/api/connect', async (req, res) => {
   }
 });
 
+let activeMonitoring = false;
+let monitorConfig: any = null;
+
+async function executeCloseAll(apiKey: string, secret: string) {
+  activeMonitoring = false; // Stop monitoring if manually triggered or triggered by leader
+  const exchange = getExchange(apiKey, secret);
+  await exchange.loadMarkets();
+  const positions = await exchange.fetchPositions();
+  
+  const results = [];
+  const errors = [];
+  logAction(`\n=== 執行一鍵平倉 ===`);
+
+  for (const position of positions) {
+    if (position.contracts && position.contracts > 0) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const side = position.side === 'long' ? 'sell' : 'buy';
+        const order = await exchange.createOrder(
+          position.symbol,
+          'market',
+          side,
+          position.contracts,
+          undefined,
+          { reduceOnly: true }
+        );
+        logAction(`[成功] 平倉 ${position.symbol} | 數量: ${position.contracts} 張`);
+        results.push({ symbol: position.symbol, order });
+      } catch (e: any) {
+        logAction(`[失敗] 平倉 ${position.symbol} 失敗 | 錯誤原因: ${e.message}`);
+        errors.push({ symbol: position.symbol, error: e.message });
+      }
+    }
+  }
+  return { results, errors };
+}
+
+async function startMonitoring() {
+  activeMonitoring = true;
+  logAction(`\n👀 [監控啟動] 開始監控帶頭幣種的止盈價格...`);
+  
+  while(activeMonitoring && monitorConfig) {
+    try {
+      const exchange = getExchange(monitorConfig.apiKey, monitorConfig.secret);
+      // Fetch all tickers to minimize API calls
+      const tickers = await exchange.fetchTickers();
+      
+      let triggerCloseAll = false;
+      let triggerReason = '';
+      
+      for (const leader of monitorConfig.leaders) {
+        const symbol = `${leader.symbol}/USDT:USDT`;
+        const ticker = tickers[symbol];
+        if (!ticker || !ticker.last) continue;
+        
+        const currentPrice = ticker.last;
+        if (leader.side === 'buy' && currentPrice >= leader.takeProfit) {
+          triggerCloseAll = true;
+          triggerReason = `${leader.symbol} 做多達到止盈價格 ${leader.takeProfit} (當前 ${currentPrice})`;
+          break;
+        }
+        if (leader.side === 'sell' && currentPrice <= leader.takeProfit) {
+          triggerCloseAll = true;
+          triggerReason = `${leader.symbol} 做空達到止盈價格 ${leader.takeProfit} (當前 ${currentPrice})`;
+          break;
+        }
+      }
+      
+      if (triggerCloseAll && activeMonitoring) {
+        logAction(`\n🔔 [帶頭老大觸發] ${triggerReason}！立即啟動一鍵全平倉！`);
+        await executeCloseAll(monitorConfig.apiKey, monitorConfig.secret);
+        break; // Exit loop after closing all
+      }
+      
+    } catch (e: any) {
+      // Ignore network errors in loop to keep monitoring
+      console.log(`[監控] 網路延遲或錯誤: ${e.message}`);
+    }
+    // Check every 2 seconds
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+}
+
 app.post('/api/open-positions', async (req, res) => {
   const { apiKey, secret, orders } = req.body;
-  // orders: Array of { symbol, amount, leverage, type, side, takeProfit, stopLoss }
+  // orders: Array of { symbol, amount, leverage, type, side, takeProfit, stopLoss, isLeader }
   try {
     const exchange = getExchange(apiKey, secret);
     await exchange.loadMarkets();
@@ -152,6 +235,25 @@ app.post('/api/open-positions', async (req, res) => {
       }
     }
 
+    // Check if there are any leader coins with TP set
+    const leaders = orders.filter((o: any) => o.isLeader && o.takeProfit);
+    if (leaders.length > 0) {
+      monitorConfig = {
+        apiKey,
+        secret,
+        leaders: leaders.map((o: any) => ({
+          symbol: o.symbol,
+          side: o.side,
+          takeProfit: Number(o.takeProfit)
+        }))
+      };
+      if (!activeMonitoring) {
+        startMonitoring(); // Run async without awaiting
+      }
+    } else {
+      activeMonitoring = false; // Stop existing monitoring if new orders have no leaders
+    }
+
     res.json({ success: true, results, errors });
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message });
@@ -161,39 +263,7 @@ app.post('/api/open-positions', async (req, res) => {
 app.post('/api/close-all', async (req, res) => {
   const { apiKey, secret } = req.body;
   try {
-    const exchange = getExchange(apiKey, secret);
-    await exchange.loadMarkets();
-    const positions = await exchange.fetchPositions();
-    
-    const results = [];
-    const errors = [];
-    logAction(`\n=== 收到一鍵平倉請求 ===`);
-
-    for (const position of positions) {
-      if (position.contracts && position.contracts > 0) {
-        try {
-          // Add delay to prevent rate limit
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          const side = position.side === 'long' ? 'sell' : 'buy';
-          // Market close
-          const order = await exchange.createOrder(
-            position.symbol,
-            'market',
-            side,
-            position.contracts,
-            undefined,
-            { reduceOnly: true }
-          );
-          logAction(`[成功] 平倉 ${position.symbol} | 數量: ${position.contracts} 張`);
-          results.push({ symbol: position.symbol, order });
-        } catch (e: any) {
-          logAction(`[失敗] 平倉 ${position.symbol} 失敗 | 錯誤原因: ${e.message}`);
-          errors.push({ symbol: position.symbol, error: e.message });
-        }
-      }
-    }
-    
+    const { results, errors } = await executeCloseAll(apiKey, secret);
     res.json({ success: true, results, errors });
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message });
