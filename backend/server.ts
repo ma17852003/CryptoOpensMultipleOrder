@@ -1,69 +1,80 @@
 import express from 'express';
 import cors from 'cors';
-import ccxt from 'ccxt';
-import dotenv from 'dotenv';
-import fs from 'fs';
-import path from 'path';
-
-dotenv.config();
+import axios from 'axios';
+import * as ccxt from 'ccxt';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const logFile = path.join(__dirname, 'trade.log');
-const logAction = (message: string) => {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${message}\n`;
-  console.log(logMessage.trim());
-  fs.appendFileSync(logFile, logMessage);
-};
+const LOG_FILE = path.join(__dirname, '../trade.log');
 
-// Helper function to create exchange instance
-const getExchange = (apiKey: string, secret: string) => {
-  return new ccxt.mexc({
+function logAction(message: string) {
+  const timestamp = new Date().toLocaleString();
+  const logMessage = `[${timestamp}] ${message}\n`;
+  console.log(message);
+  fs.appendFileSync(LOG_FILE, logMessage);
+}
+
+function getExchange(apiKey: string, secret: string) {
+  return new (ccxt as any).mexc({
     apiKey,
     secret,
-    enableRateLimit: true,
-    options: {
-      defaultType: 'swap', // Set to futures (swap)
-    },
-  });
-};
-
-const configFile = path.join(__dirname, 'config.json');
-
-app.get('/api/config', (req, res) => {
-  try {
-    if (fs.existsSync(configFile)) {
-      const config = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      res.json({ success: true, config });
-    } else {
-      res.json({ success: true, config: {} });
+    options: { 
+      defaultType: 'swap',
+      recvWindow: 10000,
+      adjustForTimeDifference: true
     }
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  });
+}
 
-app.post('/api/config', (req, res) => {
-  try {
-    fs.writeFileSync(configFile, JSON.stringify(req.body, null, 2));
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+
+function loadConfig() {
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    } catch (e) {
+      return {};
+    }
   }
-});
+  return {};
+}
+
+function saveConfig(config: any) {
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+}
 
 app.post('/api/connect', async (req, res) => {
   const { apiKey, secret } = req.body;
   try {
     const exchange = getExchange(apiKey, secret);
-    // Fetch balance to verify credentials
     const balance = await exchange.fetchBalance();
-    res.json({ success: true, balance: balance.USDT?.free || 0 });
+    res.json({ success: true, balance: balance.total.USDT || 0 });
   } catch (error: any) {
-    res.status(400).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/config', (req, res) => {
+  res.json({ success: true, config: loadConfig() });
+});
+
+app.post('/api/config', (req, res) => {
+  saveConfig(req.body);
+  res.json({ success: true });
+});
+
+app.get('/api/balance', async (req, res) => {
+  const { apiKey, secret } = req.query;
+  try {
+    const exchange = getExchange(apiKey as string, secret as string);
+    const balance = await exchange.fetchBalance();
+    res.json({ success: true, balance: balance.total.USDT || 0 });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -73,19 +84,45 @@ app.get('/api/markets', async (req, res) => {
     const exchange = getExchange(apiKey as string, secret as string);
     const markets = await exchange.loadMarkets();
     const marketData: any = {};
-    
     for (const symbol in markets) {
       const market = markets[symbol];
-      if (symbol.endsWith('/USDT:USDT')) {
-        const baseSymbol = symbol.split('/')[0];
-        marketData[baseSymbol] = {
-          maxLeverage: market.limits?.leverage?.max || (market.info as any).maxLeverage || 100,
-          precision: market.precision,
-          contractSize: market.contractSize
-        };
-      }
+      const baseSymbol = symbol.split('/')[0];
+      marketData[baseSymbol] = {
+        symbol: baseSymbol,
+        fullSymbol: symbol,
+        maxLeverage: market.limits.leverage?.max || 200,
+        minAmount: market.limits.amount?.min || 1,
+        contractSize: market.contractSize || 1
+      };
     }
     res.json({ success: true, markets: marketData });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/positions', async (req, res) => {
+  const { apiKey, secret } = req.query;
+  try {
+    const exchange = getExchange(apiKey as string, secret as string);
+    const positions = await exchange.fetchPositions();
+    const activePositions = positions.filter((p: any) => p.contracts && p.contracts > 0);
+    
+    const simplified = activePositions.map((p: any) => ({
+      symbol: p.symbol,
+      baseSymbol: p.symbol.split('/')[0],
+      side: p.side,
+      leverage: p.leverage,
+      contracts: p.contracts,
+      entryPrice: p.entryPrice,
+      markPrice: p.markPrice,
+      liquidationPrice: p.liquidationPrice,
+      unrealizedPnl: p.unrealizedPnl,
+      percentage: p.percentage,
+      margin: p.initialMargin
+    }));
+
+    res.json({ success: true, positions: simplified });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -100,46 +137,109 @@ app.post('/api/update-tpsl', async (req, res) => {
     
     const positions = await exchange.fetchPositions();
     const expectedSide = side === 'buy' ? 'long' : 'short';
-    const pos = positions.find((p: any) => p.symbol === fullSymbol && p.side === expectedSide);
+    
+    const pos = positions.find((p: any) => 
+      (p.symbol === fullSymbol || p.symbol === `${symbol}/USDT` || p.symbol === `${symbol}_USDT`) && 
+      p.side === expectedSide
+    );
     
     if (!pos || !pos.contracts || pos.contracts <= 0) {
-      return res.json({ success: false, message: '找不到對應的持倉，無法單獨更新止盈止損' });
+      return res.json({ success: false, message: `Position not found for ${symbol}` });
     }
 
-    const amount = pos.contracts;
-    const closeSide = side === 'buy' ? 'sell' : 'buy';
-
-    const openOrders = await exchange.fetchOpenOrders(fullSymbol);
+    const openOrders = await exchange.fetchOpenOrders(fullSymbol, undefined, undefined, { stop: true });
     for (const order of openOrders) {
-      if (order.stopPrice || (order.type && (order.type.includes('STOP') || order.type.includes('PROFIT')))) {
+      if (order.info && (order.info.type === '3' || order.info.type === '4' || order.info.orderType === '3' || order.info.orderType === '4')) {
         try {
           await exchange.cancelOrder(order.id, fullSymbol);
-        } catch (e) {
-          console.error(`Cancel order ${order.id} failed:`, e);
-        }
+        } catch (e) {}
       }
     }
 
+    const closeSide = side === 'buy' ? 'sell' : 'buy';
     const results = [];
-    if (takeProfit && !isNaN(parseFloat(takeProfit))) {
-      const tpOrder = await exchange.createOrder(fullSymbol, 'market', closeSide, amount, undefined, {
-        stopPrice: parseFloat(takeProfit),
-        type: 'TAKE_PROFIT_MARKET',
-        reduceOnly: true
-      });
-      results.push({ type: 'TP', order: tpOrder });
+
+    if (takeProfit && parseFloat(takeProfit) > 0) {
+      try {
+        await exchange.createOrder(fullSymbol, 'limit', closeSide, pos.contracts, parseFloat(takeProfit), {
+          stopPrice: parseFloat(takeProfit),
+          triggerPrice: parseFloat(takeProfit),
+          type: '1', // Market Take Profit
+          reduceOnly: true
+        });
+        results.push('TP set');
+      } catch (e: any) {}
     }
 
-    if (stopLoss && !isNaN(parseFloat(stopLoss))) {
-      const slOrder = await exchange.createOrder(fullSymbol, 'market', closeSide, amount, undefined, {
-        stopPrice: parseFloat(stopLoss),
-        type: 'STOP_LOSS_MARKET',
-        reduceOnly: true
-      });
-      results.push({ type: 'SL', order: slOrder });
+    if (stopLoss && parseFloat(stopLoss) > 0) {
+      try {
+        await exchange.createOrder(fullSymbol, 'limit', closeSide, pos.contracts, parseFloat(stopLoss), {
+          stopPrice: parseFloat(stopLoss),
+          triggerPrice: parseFloat(stopLoss),
+          type: '2', // Market Stop Loss
+          reduceOnly: true
+        });
+        results.push('SL set');
+      } catch (e: any) {}
     }
 
     res.json({ success: true, results });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post('/api/bulk-update-tpsl', async (req, res) => {
+  const { apiKey, secret, configs } = req.body;
+  try {
+    const exchange = getExchange(apiKey, secret);
+    await exchange.loadMarkets();
+    const positions = await exchange.fetchPositions();
+    const results = [];
+    const errors = [];
+
+    for (const config of configs) {
+      try {
+        const fullSymbol = `${config.symbol}/USDT:USDT`;
+        const expectedSide = config.side === 'buy' ? 'long' : 'short';
+        const pos = positions.find((p: any) => 
+          (p.symbol === fullSymbol || p.symbol === `${config.symbol}/USDT` || p.symbol === `${config.symbol}_USDT`) && 
+          p.side === expectedSide
+        );
+
+        if (pos && pos.contracts > 0) {
+          const closeSide = config.side === 'buy' ? 'sell' : 'buy';
+          const openOrders = await exchange.fetchOpenOrders(fullSymbol, undefined, undefined, { stop: true });
+          for (const order of openOrders) {
+            if (order.info && (order.info.type === '3' || order.info.type === '4')) {
+              await exchange.cancelOrder(order.id, fullSymbol);
+            }
+          }
+
+          if (config.takeProfit && parseFloat(config.takeProfit) > 0) {
+            await exchange.createOrder(fullSymbol, 'limit', closeSide, pos.contracts, parseFloat(config.takeProfit), {
+              stopPrice: parseFloat(config.takeProfit),
+              triggerPrice: parseFloat(config.takeProfit),
+              type: '1', // Market TP
+              reduceOnly: true
+            });
+          }
+          if (config.stopLoss && parseFloat(config.stopLoss) > 0) {
+            await exchange.createOrder(fullSymbol, 'limit', closeSide, pos.contracts, parseFloat(config.stopLoss), {
+              stopPrice: parseFloat(config.stopLoss),
+              triggerPrice: parseFloat(config.stopLoss),
+              type: '2', // Market SL
+              reduceOnly: true
+            });
+          }
+          results.push({ symbol: config.symbol, success: true });
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      } catch (e: any) {
+        errors.push({ symbol: config.symbol, error: e.message });
+      }
+    }
+    res.json({ success: true, results, errors });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -149,14 +249,11 @@ let activeMonitoring = false;
 let monitorConfig: any = null;
 
 async function executeCloseAll(apiKey: string, secret: string) {
-  activeMonitoring = false; // Stop monitoring if manually triggered or triggered by leader
   const exchange = getExchange(apiKey, secret);
   await exchange.loadMarkets();
   const positions = await exchange.fetchPositions();
-  
   const results = [];
   const errors = [];
-  logAction(`\n=== 執行一鍵平倉 ===`);
 
   for (const position of positions) {
     if (position.contracts && position.contracts > 0) {
@@ -171,10 +268,8 @@ async function executeCloseAll(apiKey: string, secret: string) {
           undefined,
           { reduceOnly: true }
         );
-        logAction(`[成功] 平倉 ${position.symbol} | 數量: ${position.contracts} 張`);
         results.push({ symbol: position.symbol, order });
       } catch (e: any) {
-        logAction(`[失敗] 平倉 ${position.symbol} 失敗 | 錯誤原因: ${e.message}`);
         errors.push({ symbol: position.symbol, error: e.message });
       }
     }
@@ -184,152 +279,140 @@ async function executeCloseAll(apiKey: string, secret: string) {
 
 async function startMonitoring() {
   activeMonitoring = true;
-  logAction(`\n👀 [監控啟動] 開始監控帶頭幣種的實際倉位狀態...`);
-  
-  // 延遲 3 秒再開始首次檢查，確保 MEXC 倉位已經完全更新
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  logAction("Monitoring loop started");
+  await new Promise(resolve => setTimeout(resolve, 5000));
   
   while(activeMonitoring && monitorConfig) {
     try {
       const exchange = getExchange(monitorConfig.apiKey, monitorConfig.secret);
-      // 取得最新的所有真實倉位
       const positions = await exchange.fetchPositions();
-      
       let triggerCloseAll = false;
-      let triggerReason = '';
       
       for (const leader of monitorConfig.leaders) {
-        const symbol = `${leader.symbol}/USDT:USDT`;
+        const symbol = leader.symbol + '/USDT:USDT';
         const expectedSide = leader.side === 'buy' ? 'long' : 'short';
         const pos = positions.find((p: any) => p.symbol === symbol && p.side === expectedSide);
         
-        // 如果帶頭幣種的倉位不見了，或者數量變成 0，代表它剛剛被交易所平倉了！
         if (!pos || !pos.contracts || pos.contracts === 0) {
+          logAction(`Leader ${symbol} position closed. Triggering Close All.`);
           triggerCloseAll = true;
-          triggerReason = `${leader.symbol} 的帶頭倉位已被平倉 (觸及止盈/止損/或手動平倉)`;
           break;
         }
       }
       
       if (triggerCloseAll && activeMonitoring) {
-        logAction(`\n🔔 [帶頭老大觸發] ${triggerReason}！立即啟動一鍵全平倉！`);
         await executeCloseAll(monitorConfig.apiKey, monitorConfig.secret);
-        break; // Exit loop after closing all
+        activeMonitoring = false;
+        break; 
       }
-      
     } catch (e: any) {
-      console.log(`[監控] 網路延遲或錯誤: ${e.message}`);
+      // Silently retry on network errors
     }
-    // Check every 2 seconds
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
   }
 }
 
 app.post('/api/open-positions', async (req, res) => {
   const { apiKey, secret, orders } = req.body;
-  // orders: Array of { symbol, amount, leverage, type, side, takeProfit, stopLoss, isLeader }
   try {
     const exchange = getExchange(apiKey, secret);
     await exchange.loadMarkets();
-
     const results = [];
     const errors = [];
-    logAction(`\n=== 收到批量開倉請求: 共 ${orders.length} 個幣種 ===`);
+    
+    // Reset monitoring
+    activeMonitoring = false;
+    monitorConfig = null;
+    await new Promise(resolve => setTimeout(resolve, 500));
 
-
-
-    // Execute market orders
     for (const order of orders) {
       try {
-        const symbol = `${order.symbol}/USDT:USDT`;
-        const market = exchange.markets[symbol];
-        if (!market) throw new Error(`Market ${symbol} not found`);
+        // Find the correct symbol mapping
+        const markets = exchange.markets;
+        const market = markets[order.symbol] || markets[order.symbol + '/USDT:USDT'] || markets[order.symbol + '/USDT'];
+        if (!market) throw new Error(`Symbol ${order.symbol} not found`);
 
-        // 嚴格設定槓桿 (只用全倉)
+        const symbol = market.symbol;
+
         if (order.leverage) {
           try {
             const positionType = order.side === 'buy' ? 1 : 2;
             await exchange.setLeverage(order.leverage, symbol, { openType: 2, positionType });
-            logAction(`[系統] 成功設定 ${order.symbol} 全倉槓桿為 ${order.leverage}x`);
           } catch (e: any) {
-            throw new Error(`設定全倉槓桿失敗: ${e.message}。請確保您的 MEXC 帳戶處於全倉模式，或是該幣種支援全倉。`);
+            logAction(`Leverage set error for ${symbol}: ${e.message}`);
           }
         }
 
-        // User inputs USDT as margin amount. Total position = Margin * Leverage
-        let amount = order.amount;
-        let positionUsdt = order.amount * (order.leverage || 1);
+        // Calculate amount
+        const amountUsdt = parseFloat(order.amount);
+        const leverage = parseInt(order.leverage || '1');
+        const positionUsdt = amountUsdt * leverage;
         
+        let amount = order.amount;
         if (order.isUsdtAmount) {
            const ticker = await exchange.fetchTicker(symbol);
-           // Calculate total coins needed for the position
            const coinAmount = positionUsdt / ticker.last;
-           
-           if (market.contractSize) {
-               // Calculate number of contracts. 嚴格按照使用者輸入的金額計算
-               amount = Math.round(coinAmount / market.contractSize);
-               
-               if (amount < 1) {
-                   const requiredUsdt = (market.contractSize * ticker.last) / (order.leverage || 1);
-                   throw new Error(`您設定的 ${order.amount} USDT 本金不足以購買最少 1 張合約。該幣種在 ${order.leverage}x 槓桿下，最少需要約 ${requiredUsdt.toFixed(2)} USDT 才能開倉。`);
-               }
-               
-               const estimatedCost = (amount * market.contractSize * ticker.last) / (order.leverage || 1);
-               logAction(`[計算] ${order.symbol}: 目標成本 ${order.amount}u -> 實際買入 ${amount} 張 -> 實際消耗本金約 ${estimatedCost.toFixed(4)}u`);
-           } else {
-               amount = exchange.amountToPrecision(symbol, coinAmount) as any;
-           }
+           const contractSize = market.contractSize || 1;
+           amount = Math.round(coinAmount / contractSize);
+           if (amount < 1) throw new Error(`Amount ${amount} too low for ${symbol}`);
         }
 
-        // Mexc might require specific params for TP/SL.
-        // CCXT unified params: takeProfitPrice, stopLossPrice
-        const params: any = {};
-        if (order.takeProfit) {
-            params.takeProfitPrice = order.takeProfit;
-        }
-        if (order.stopLoss) {
-            params.stopLossPrice = order.stopLoss;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // Prepare TP/SL params for atomic order creation
+        const params: any = { reduceOnly: false };
+        
+        // Smart Validation: ensure TP/SL are in correct direction
+        let tpVal = order.takeProfit ? parseFloat(order.takeProfit) : 0;
+        let slVal = order.stopLoss ? parseFloat(order.stopLoss) : 0;
+        
+        // If both provided, ensure they aren't reversed
+        if (tpVal > 0 && slVal > 0) {
+          if (order.side === 'buy') { // Long
+            if (tpVal < slVal) { [tpVal, slVal] = [slVal, tpVal]; }
+          } else { // Short
+            if (tpVal > slVal) { [tpVal, slVal] = [slVal, tpVal]; }
+          }
         }
 
-        // Add small delay to prevent MEXC rate limit "Requests are too frequent"
-        await new Promise(resolve => setTimeout(resolve, 500));
+        if (tpVal > 0) {
+          params.takeProfitPrice = tpVal;
+          params.tpTriggerBy = 1; // Last Price
+        }
+        if (slVal > 0) {
+          params.stopLossPrice = slVal;
+          params.slTriggerBy = 1; // Last Price
+        }
 
-        const createdOrder = await exchange.createOrder(
-          symbol,
-          'market',
-          order.side, // 'buy' or 'sell'
-          amount,
-          undefined, // price not needed for market order
-          params
-        );
-        logAction(`[成功] ${order.symbol} ${order.side} 開倉成功 | 數量: ${amount} 張 | 槓桿: ${order.leverage}x`);
+        // Cancel existing trigger orders for this symbol first
+        try {
+          const openOrders = await exchange.fetchOpenOrders(symbol, undefined, undefined, { stop: true });
+          for (const o of openOrders) {
+             if (o.info && (['1', '2', '3', '4'].includes(o.info.type) || ['1', '2', '3', '4'].includes(o.info.orderType))) {
+               try { await exchange.cancelOrder(o.id, symbol); } catch (e) {}
+             }
+          }
+        } catch (e) {}
+
+        // Create atomic market order with TP/SL
+        const createdOrder = await exchange.createOrder(symbol, 'market', order.side, amount, undefined, params);
         results.push({ symbol: order.symbol, order: createdOrder });
+
+        // Small delay between different coins to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (e: any) {
-        logAction(`[失敗] ${order.symbol} 開倉失敗 | 錯誤原因: ${e.message}`);
+        logAction(`Open position error for ${order.symbol}: ${e.message}`);
         errors.push({ symbol: order.symbol, error: e.message });
       }
     }
 
-    // 確保只監控 "成功開倉" 且 "設定為帶頭" 的幣種
     const successfulSymbols = results.map((r: any) => r.symbol);
     const validLeaders = orders.filter((o: any) => o.isLeader && successfulSymbols.includes(o.symbol));
     
     if (validLeaders.length > 0) {
-      monitorConfig = {
-        apiKey,
-        secret,
-        leaders: validLeaders.map((o: any) => ({
-          symbol: o.symbol,
-          side: o.side
-        }))
-      };
-      if (!activeMonitoring) {
-        startMonitoring(); // Run async without awaiting
-      }
-    } else {
-      activeMonitoring = false; // Stop existing monitoring if new orders have no leaders
+      monitorConfig = { apiKey, secret, leaders: validLeaders.map((o: any) => ({ symbol: o.symbol, side: o.side })) };
+      startMonitoring();
     }
-
     res.json({ success: true, results, errors });
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message });
@@ -346,7 +429,4 @@ app.post('/api/close-all', async (req, res) => {
   }
 });
 
-const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`);
-});
+app.listen(3001, () => console.log('Backend running on port 3001'));

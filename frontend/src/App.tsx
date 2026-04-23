@@ -18,6 +18,20 @@ interface OrderConfig {
   isLeader?: boolean;
 }
 
+interface ExchangePosition {
+  symbol: string;
+  baseSymbol: string;
+  side: string;
+  leverage: number;
+  contracts: number;
+  entryPrice: number;
+  markPrice?: number;
+  unrealizedPnl?: number;
+  percentage?: number;
+  liquidationPrice?: number;
+  margin?: number;
+}
+
 const API_BASE = 'http://localhost:3001/api';
 
 function App() {
@@ -26,6 +40,8 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
   const [markets, setMarkets] = useState<Record<string, any>>({});
+  const [exchangePositions, setExchangePositions] = useState<ExchangePosition[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const [bulkConfig, setBulkConfig] = useState({
     side: 'buy' as 'buy' | 'sell',
@@ -75,6 +91,28 @@ function App() {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000);
   };
+
+  const fetchPositions = async () => {
+    if (!apiKey || !apiSecret) return;
+    try {
+      const res = await axios.get(`${API_BASE}/positions`, {
+        params: { apiKey, secret: apiSecret }
+      });
+      if (res.data.success) {
+        setExchangePositions(res.data.positions);
+      }
+    } catch (err) {
+      console.error('Failed to fetch positions:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (isConnected) {
+      fetchPositions();
+      const interval = setInterval(fetchPositions, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [isConnected]);
 
   const handleConnect = async () => {
     if (!apiKey || !apiSecret) {
@@ -157,13 +195,35 @@ function App() {
     }
     setLoading(true);
     try {
-      const payloadOrders = orders.map(o => ({
-        ...o,
-        amount: Number(o.amount) || 0,
-        leverage: Number(o.leverage) || 1,
-        takeProfit: o.takeProfit ? Number(o.takeProfit) : undefined,
-        stopLoss: o.stopLoss ? Number(o.stopLoss) : undefined
-      }));
+      const payloadOrders = orders.map(o => {
+        // Simple validation check for TP/SL direction if possible
+        // For now, we just pass them through but ensure they are numbers
+        return {
+          ...o,
+          amount: Number(o.amount) || 0,
+          leverage: Number(o.leverage) || 1,
+          takeProfit: o.takeProfit ? Number(o.takeProfit) : undefined,
+          stopLoss: o.stopLoss ? Number(o.stopLoss) : undefined
+        };
+      });
+      
+      // Check for reversed TP/SL for all symbols
+      for (const o of payloadOrders) {
+        if (o.takeProfit && o.stopLoss) {
+          if (o.side === 'buy' && Number(o.takeProfit) < Number(o.stopLoss)) {
+            if (!confirm(`警告：您的 ${o.symbol} 止盈低於止損（做多），這會被交易所拒絕。是否繼續？`)) {
+              setLoading(false);
+              return;
+            }
+          }
+          if (o.side === 'sell' && Number(o.takeProfit) > Number(o.stopLoss)) {
+            if (!confirm(`警告：您的 ${o.symbol} 止盈高於止損（做空），這會被交易所拒絕。是否繼續？`)) {
+              setLoading(false);
+              return;
+            }
+          }
+        }
+      }
       const res = await axios.post(`${API_BASE}/open-positions`, {
         apiKey,
         secret: apiSecret,
@@ -209,25 +269,6 @@ function App() {
       showNotification(err.response?.data?.message || err.message, 'error');
     }
     setLoading(false);
-  };
-
-  const handleUpdateTPSL = async (order: OrderConfig) => {
-    if (!isConnected || !apiKey || !apiSecret) return;
-    try {
-      const res = await axios.post(`${API_BASE}/update-tpsl`, {
-        apiKey,
-        secret: apiSecret,
-        symbol: order.symbol,
-        side: order.side,
-        takeProfit: order.takeProfit,
-        stopLoss: order.stopLoss
-      });
-      if (res.data.success) {
-        showNotification(`${order.symbol} 止盈止損更新成功`, 'success');
-      }
-    } catch (err: any) {
-      console.log('TPSL Update Info:', err.response?.data?.message || err.message);
-    }
   };
 
   return (
@@ -429,26 +470,28 @@ function App() {
                       </div>
                     </td>
                     <td>
-                      <input 
-                        type="text" 
-                        className="input-field" 
-                        style={{ width: '120px', padding: '0.5rem' }}
-                        placeholder="選填"
-                        value={order.takeProfit || ''}
-                        onChange={e => updateOrder(order.id, 'takeProfit', e.target.value)}
-                        onBlur={() => handleUpdateTPSL(order)}
-                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                        <input 
+                          type="text" 
+                          className="input-field"
+                          style={{ width: '120px', padding: '0.5rem' }}
+                          placeholder="選填"
+                          value={order.takeProfit || ''}
+                          onChange={e => updateOrder(order.id, 'takeProfit', e.target.value)}
+                        />
+                      </div>
                     </td>
                     <td>
-                      <input 
-                        type="text" 
-                        className="input-field" 
-                        style={{ width: '120px', padding: '0.5rem' }}
-                        placeholder="選填"
-                        value={order.stopLoss || ''}
-                        onChange={e => updateOrder(order.id, 'stopLoss', e.target.value)}
-                        onBlur={() => handleUpdateTPSL(order)}
-                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                        <input 
+                          type="text" 
+                          className="input-field" 
+                          style={{ width: '120px', padding: '0.5rem' }}
+                          placeholder="選填"
+                          value={order.stopLoss || ''}
+                          onChange={e => updateOrder(order.id, 'stopLoss', e.target.value)}
+                        />
+                      </div>
                     </td>
                     <td>
                       <button className="btn-icon" onClick={() => removeCoin(order.id)}>
@@ -469,6 +512,71 @@ function App() {
           <button className="btn btn-success" onClick={handleOpenAll} disabled={loading || orders.length === 0 || !isConnected}>
             <Play size={18} /> 同時市價開倉 ({orders.length} 個)
           </button>
+        </div>
+      </div>
+
+      {/* 當前持倉區塊 */}
+      <div className="card" style={{ marginTop: '2rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+          <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: 'var(--primary)' }}>●</span> 我的持倉 (交易所)
+          </h2>
+          <button 
+            className="btn btn-secondary" 
+            onClick={() => {
+              setIsRefreshing(true);
+              fetchPositions().finally(() => setIsRefreshing(false));
+            }}
+            disabled={isRefreshing}
+            style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }}
+          >
+            {isRefreshing ? '刷新中...' : '手動刷新'}
+          </button>
+        </div>
+
+        <div className="table-container">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>交易對 (Symbol)</th>
+                <th>方向 (Side)</th>
+                <th>槓桿 (Lev)</th>
+                <th>倉位 (Size)</th>
+                <th>均價 (Entry)</th>
+                <th>本金 (Margin)</th>
+                <th>盈虧 (PnL)</th>
+                <th>強平價 (Liq)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {exchangePositions.length === 0 ? (
+                <tr>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>
+                    目前無持有倉位
+                  </td>
+                </tr>
+              ) : (
+                exchangePositions.map((pos, idx) => (
+                  <tr key={idx}>
+                    <td style={{ fontWeight: 'bold' }}>{pos.baseSymbol}</td>
+                    <td>
+                      <span className={`badge ${pos.side === 'long' ? 'badge-success' : 'badge-danger'}`}>
+                        {pos.side === 'long' ? '做多 (Long)' : '做空 (Short)'}
+                      </span>
+                    </td>
+                    <td>{pos.leverage}x</td>
+                    <td>{pos.contracts} 張</td>
+                    <td>{pos.entryPrice?.toLocaleString()}</td>
+                    <td>{pos.margin?.toFixed(2)} USDT</td>
+                    <td style={{ color: (pos.unrealizedPnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 'bold' }}>
+                      {pos.unrealizedPnl?.toFixed(4)} USDT ({pos.percentage?.toFixed(2)}%)
+                    </td>
+                    <td style={{ color: 'var(--warning)' }}>{pos.liquidationPrice?.toLocaleString() || '--'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
